@@ -15,12 +15,14 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 
 import info.nightscout.androidaps.MainApp;
 import info.nightscout.androidaps.R;
 import info.nightscout.androidaps.db.BgReading;
+import info.nightscout.androidaps.plugins.IobCobCalculator.IobCobCalculatorPlugin;
 import info.nightscout.utils.DateUtil;
 import info.nightscout.utils.DecimalFormatter;
 import info.nightscout.utils.Round;
@@ -70,7 +72,11 @@ public class GlucoseStatus {
     public static GlucoseStatus getGlucoseStatusData(boolean allowOldData) {
         // load 45min
         long fromtime = DateUtil.now() - 60 * 1000L * 45;
-        List<BgReading> data = MainApp.getDbHelper().getBgreadingsDataFromTime(fromtime, false);
+        //List<BgReading> data = MainApp.getDbHelper().getBgreadingsDataFromTime(fromtime, false);
+        List<BgReading> data = IobCobCalculatorPlugin.getPlugin().getBgReadings();
+        List<?> shallowCopy = data.subList(0, data.size());
+        Collections.reverse(shallowCopy);
+        data = (List<BgReading>) shallowCopy;
 
         int sizeRecords = data.size();
         if (sizeRecords == 0) {
@@ -100,7 +106,7 @@ public class GlucoseStatus {
         ArrayList<Double> short_deltas = new ArrayList<Double>();
         ArrayList<Double> long_deltas = new ArrayList<Double>();
 
-        for (int i = 1; i < data.size(); i++) {
+        for (int i = 1; i < sizeRecords; i++) {
             if (data.get(i).value > 38) {
                 BgReading then = data.get(i);
                 long then_date = then.date;

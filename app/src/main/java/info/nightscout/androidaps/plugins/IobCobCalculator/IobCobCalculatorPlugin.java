@@ -98,6 +98,10 @@ public class IobCobCalculatorPlugin extends PluginBase {
         return autosensDataTable;
     }
 
+    public void initBgReadings() {
+        bgReadings = new ArrayList<>();
+    }
+
     public List<BgReading> getBgReadings() {
         return bgReadings;
     }
@@ -598,6 +602,13 @@ public class IobCobCalculatorPlugin extends PluginBase {
             else
                 thread = new IobCobThread(this, from, end, bgDataReload, limitDataToOldestAvailable, cause);
             thread.start();
+        }
+    }
+
+    public void waitForCalculation() {
+        if (thread == null) return;
+        while(thread.getState() != Thread.State.TERMINATED) {
+            SystemClock.sleep(100);
         }
     }
 

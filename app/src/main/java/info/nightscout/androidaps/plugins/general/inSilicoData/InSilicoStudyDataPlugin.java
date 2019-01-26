@@ -42,6 +42,8 @@ import info.nightscout.androidaps.db.ProfileSwitch;
 import info.nightscout.androidaps.db.Source;
 import info.nightscout.androidaps.db.TempTarget;
 import info.nightscout.androidaps.db.TemporaryBasal;
+import info.nightscout.androidaps.events.Event;
+import info.nightscout.androidaps.events.EventNewBasalProfile;
 import info.nightscout.androidaps.events.EventRefreshGui;
 import info.nightscout.androidaps.events.EventRefreshOverview;
 import info.nightscout.androidaps.interfaces.PluginBase;
@@ -52,8 +54,6 @@ import info.nightscout.androidaps.plugins.Careportal.Dialogs.NewNSTreatmentDialo
 import info.nightscout.androidaps.plugins.ConfigBuilder.ConfigBuilderPlugin;
 import info.nightscout.androidaps.plugins.ConfigBuilder.ProfileFunctions;
 import info.nightscout.androidaps.plugins.ConstraintsObjectives.ObjectivesPlugin;
-import info.nightscout.androidaps.plugins.Food.FoodPlugin;
-import info.nightscout.androidaps.plugins.IobCobCalculator.CobInfo;
 import info.nightscout.androidaps.plugins.IobCobCalculator.IobCobCalculatorPlugin;
 import info.nightscout.androidaps.plugins.IobCobCalculator.events.EventIobCalculationProgress;
 import info.nightscout.androidaps.plugins.Loop.APSResult;
@@ -82,6 +82,7 @@ import info.nightscout.androidaps.plugins.Source.SourceMM640gPlugin;
 import info.nightscout.androidaps.plugins.Source.SourceNSClientPlugin;
 import info.nightscout.androidaps.plugins.Source.SourcePoctechPlugin;
 import info.nightscout.androidaps.plugins.Source.SourceXdripPlugin;
+import info.nightscout.androidaps.plugins.Treatments.Treatment;
 import info.nightscout.androidaps.plugins.Treatments.TreatmentsPlugin;
 import info.nightscout.androidaps.receivers.SourceFileReceiver;
 import info.nightscout.androidaps.services.Intents;
@@ -169,6 +170,8 @@ public class InSilicoStudyDataPlugin extends PluginBase {
         log.debug("EXECUTING study data");
         importUsed = true;
 
+        MainApp.bus().disablePost();
+
         clearDatabase();
 
         this.configuration = configuration;
@@ -187,7 +190,8 @@ public class InSilicoStudyDataPlugin extends PluginBase {
             MainApp.bus().post(new EventIobCalculationProgress("Writing output file"));
             exportFile(output, result);
         }
-        MainApp.bus().post(new EventIobCalculationProgress(""));
+
+        MainApp.bus().enablePost();
         MainApp.bus().post(new EventRefreshOverview("InSilico"));
     }
 
@@ -270,11 +274,17 @@ public class InSilicoStudyDataPlugin extends PluginBase {
     }
 
     private void clearDatabase() {
-        MainApp.getDbHelper().resetDatabases();
+        //MainApp.getDbHelper().resetDatabases();
         // should be handled by Plugin-Interface and
         // additional service interface and plugin registry
-        FoodPlugin.getPlugin().getService().resetFood();
-        TreatmentsPlugin.getPlugin().getService().resetTreatments();
+        //FoodPlugin.getPlugin().getService().resetFood();
+        //TreatmentsPlugin.getPlugin().getService().resetTreatments();
+        TreatmentsPlugin.getPlugin().getTreatments().clear();
+        TreatmentsPlugin.getPlugin().getTempBasals().clear();
+        TreatmentsPlugin.getPlugin().getExtendedBoluses().clear();
+        TreatmentsPlugin.getPlugin().getTempTargets().clear();
+        TreatmentsPlugin.getPlugin().getProfiles().reset();
+        IobCobCalculatorPlugin.getPlugin().initBgReadings();
     }
 
     private boolean importFile(String input) throws IOException {
@@ -307,8 +317,6 @@ public class InSilicoStudyDataPlugin extends PluginBase {
         }
 
         log.debug("========== FILE ==========");
-
-        MainApp.bus().post(new EventIobCalculationProgress("Loading Profile"));
 
         // read basal rates
         // 1.54 1.54 1.54 1.54 1.54 1.54 1.54 1.54 1.54 1.54 1.54 1.54
@@ -386,51 +394,10 @@ public class InSilicoStudyDataPlugin extends PluginBase {
 
             ProfileSwitch profileSwitch = NewNSTreatmentDialog.prepareProfileSwitch(profileStore, "InSilico", 0, 100, PROFILESHIFT, 100000);
             profileSwitch.source = Source.NIGHTSCOUT;
-            TreatmentsPlugin.getPlugin().addToHistoryProfileSwitch(profileSwitch);
-            SystemClock.sleep(2000); // wait for processing
+            TreatmentsPlugin.getPlugin().getProfiles().add(profileSwitch);
         } catch (JSONException e) {
             e.printStackTrace();
         }
-
-        MainApp.bus().post(new EventIobCalculationProgress("Loading BGs"));
-
-        // read CGM
-        // Glucose_concentration ***************************************************
-        // Time 	 	 	 	 	 conc
-        // (dd/mm/yyyy hh:mm) 	 	 (mmol/L)
-        // 28/07/2018 09:51 	 	 9.082348
-        // 28/07/2018 09:52 	 	 9.058853
-        // 28/07/2018 09:53 	 	 9.035480
-        if (!readUpTo(reader, "Glucose_concentration")) return false;
-
-        reader.readLine(); // skip header "Time conc"
-        reader.readLine(); // skip header "(dd/mm/yyyy hh:mm) 	 	 (mmol/L)"
-
-        long last_date = 0;
-
-        while ((line = reader.readLine()) != null && !line.equals("")) {
-            InputEntry e = parseEntry(line);
-            if (e != null) {
-                if (e.date >= (last_date + T.mins(5).msecs())) {
-                    log.debug(DateUtil.dateAndTimeFullString(e.date) + " -> " + DateUtil.dateAndTimeFullString(e.date + OFFSET));
-                    BgReading bgReading = new BgReading()
-                            .date(e.date + OFFSET)
-                            .value(e.value * Constants.MMOLL_TO_MGDL);
-                    MainApp.getDbHelper().createIfNotExists(bgReading, "G5 Native");
-                    last_date = e.date;
-                } else {
-                    log.warn("Ignoring BG: " + e.log());
-                }
-            }
-        }
-
-        SystemClock.sleep(3000); // wait for BG reload
-
-        // rewind back to start of the file
-        ((FileInputStream) is).getChannel().position(0);
-        reader = new BufferedReader(new InputStreamReader(is));
-
-        MainApp.bus().post(new EventIobCalculationProgress("Loading carbs"));
 
         // read meals
         // Enteral_bolus (meal) ********************************************
@@ -446,12 +413,11 @@ public class InSilicoStudyDataPlugin extends PluginBase {
         while ((line = reader.readLine()) != null && !line.equals("")) {
             InputEntry e = parseEntry(line);
             if (e != null) {
-                DetailedBolusInfo t = new DetailedBolusInfo();
+                Treatment t = new Treatment();
                 t.date = e.date + OFFSET;
                 t.carbs = e.value;
                 t.source = Source.NIGHTSCOUT;
-                t.notes = e.extra;
-                TreatmentsPlugin.getPlugin().addToHistoryTreatment(t, true);
+                TreatmentsPlugin.getPlugin().getTreatments().add(t);
 
                 // Start hypo target if needed
                 BgReading actual = IobCobCalculatorPlugin.getPlugin().findOlder(t.date);
@@ -464,12 +430,10 @@ public class InSilicoStudyDataPlugin extends PluginBase {
                             .low(Profile.toMgdl(HYPO_TT_TARGET, Constants.MMOL))
                             .high(Profile.toMgdl(HYPO_TT_TARGET, Constants.MMOL));
                     if (TreatmentsPlugin.getPlugin().getTempTargetFromHistory(t.date) == null)
-                        TreatmentsPlugin.getPlugin().addToHistoryTempTarget(tempTarget);
+                        TreatmentsPlugin.getPlugin().getTempTargets().add(tempTarget);
                 }
             }
         }
-
-        MainApp.bus().post(new EventIobCalculationProgress("Loading boluses"));
 
         // read bolus
         // Insulin_bolus ***************************************************
@@ -486,12 +450,11 @@ public class InSilicoStudyDataPlugin extends PluginBase {
         while ((line = reader.readLine()) != null && !line.equals("")) {
             InputEntry e = parseEntry(line);
             if (e != null) {
-                DetailedBolusInfo t = new DetailedBolusInfo();
+                Treatment t = new Treatment();
                 t.date = e.date + T.secs(1).msecs() + OFFSET; // to be sure it's different from carbs
                 t.insulin = e.value;
                 t.source = Source.NIGHTSCOUT;
-                t.notes = e.extra;
-                TreatmentsPlugin.getPlugin().addToHistoryTreatment(t, true);
+                TreatmentsPlugin.getPlugin().getTreatments().add(t);
             }
         }
 
@@ -518,9 +481,40 @@ public class InSilicoStudyDataPlugin extends PluginBase {
                             .date(e.date + OFFSET)
                             .absolute(e.value)
                             .duration(5);
-                    TreatmentsPlugin.getPlugin().addToHistoryTempBasal(temporaryBasal);
+                    TreatmentsPlugin.getPlugin().getTempBasals().add(temporaryBasal);
                 } else {
                     log.warn("Ignoring TBR: " + e.log());
+                }
+            }
+        }
+
+        // read CGM
+        // Glucose_concentration ***************************************************
+        // Time 	 	 	 	 	 conc
+        // (dd/mm/yyyy hh:mm) 	 	 (mmol/L)
+        // 28/07/2018 09:51 	 	 9.082348
+        // 28/07/2018 09:52 	 	 9.058853
+        // 28/07/2018 09:53 	 	 9.035480
+        if (!readUpTo(reader, "Glucose_concentration")) return false;
+
+        reader.readLine(); // skip header "Time conc"
+        reader.readLine(); // skip header "(dd/mm/yyyy hh:mm) 	 	 (mmol/L)"
+
+        long last_date = 0;
+
+        while ((line = reader.readLine()) != null && !line.equals("")) {
+            InputEntry e = parseEntry(line);
+            if (e != null) {
+                if (e.date >= (last_date + T.mins(5).msecs())) {
+                    log.debug(DateUtil.dateAndTimeFullString(e.date) + " -> " + DateUtil.dateAndTimeFullString(e.date + OFFSET));
+                    BgReading bgReading = new BgReading()
+                            .date(e.date + OFFSET)
+                            .value(e.value * Constants.MMOLL_TO_MGDL);
+                    if (bgReading.value < 39) bgReading.value = 39;
+                    IobCobCalculatorPlugin.getPlugin().getBgReadings().add(bgReading);
+                    last_date = e.date;
+                } else {
+                    log.warn("Ignoring BG: " + e.log());
                 }
             }
         }
@@ -544,7 +538,9 @@ public class InSilicoStudyDataPlugin extends PluginBase {
             return false;
         }
 
-        MainApp.bus().post(new EventIobCalculationProgress("Data Loaded"));
+        IobCobCalculatorPlugin.getPlugin().createBucketedData();
+        IobCobCalculatorPlugin.getPlugin().runCalculation("inSilico", System.currentTimeMillis(), false, true, new EventNewBasalProfile());
+        IobCobCalculatorPlugin.getPlugin().waitForCalculation();
 
         log.debug("========== FILE ==========");
         return true;
